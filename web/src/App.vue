@@ -6,9 +6,10 @@ interface ServerState {
   id: string;
   name: string;
   source: string;
-  transport: 'stdio' | 'remote';
+  transport: 'stdio' | 'http' | 'remote';
   status: Status;
   pid?: number;
+  dir?: string;
   port?: number;
   endpoint?: string;
   startedAt?: number;
@@ -25,13 +26,12 @@ let ws: WebSocket | null = null;
 const API = ''; // same-origin: the daemon serves this page
 
 const DEMO: ServerState[] = [
-  { id: 'cursor:playwright', name: 'playwright', source: 'cursor', transport: 'stdio', status: 'running', pid: 51210, port: 9100, endpoint: 'http://localhost:9100/sse' },
+  { id: 'project:my-ts-mcp', name: 'my-ts-mcp', source: 'project', transport: 'stdio', status: 'running', pid: 51220, port: 9100, dir: '~/work/mcp/ts-svc', endpoint: 'http://localhost:9100/sse' },
+  { id: 'project:my-py-mcp', name: 'my-py-mcp', source: 'project', transport: 'http', status: 'running', pid: 51221, port: 8000, dir: '~/work/mcp/py-svc', endpoint: 'http://localhost:8000' },
+  { id: 'project:crawler-mcp', name: 'crawler-mcp', source: 'project', transport: 'stdio', status: 'error', port: 9101, dir: '~/work/mcp/crawler', endpoint: 'http://localhost:9101/sse', lastError: 'exited (code=1) — module not found, run `uv sync`' },
+  { id: 'project:notes-mcp', name: 'notes-mcp', source: 'project', transport: 'http', status: 'stopped', port: 8010, dir: '~/work/mcp/notes' },
   { id: 'cursor:figma', name: 'Figma', source: 'cursor', transport: 'remote', status: 'running', endpoint: 'https://mcp.figma.com/mcp' },
-  { id: 'cursor:mcp-mysql-query', name: 'mcp_mysql_query', source: 'cursor', transport: 'stdio', status: 'running', pid: 51211, port: 9101, endpoint: 'http://localhost:9101/sse' },
-  { id: 'cursor:github', name: 'github', source: 'cursor', transport: 'stdio', status: 'error', port: 9102, endpoint: 'http://localhost:9102/sse', lastError: 'exited (code=1) — missing GITHUB_PERSONAL_ACCESS_TOKEN' },
-  { id: 'cursor:memory', name: 'memory', source: 'cursor', transport: 'stdio', status: 'stopped', port: 9103 },
-  { id: 'cursor:sequential-thinking', name: 'sequential-thinking', source: 'cursor', transport: 'stdio', status: 'starting', port: 9104, endpoint: 'http://localhost:9104/sse' },
-  { id: 'claude-code:ctq', name: 'ctq', source: 'claude-code', transport: 'stdio', status: 'running', pid: 51212, port: 9105, endpoint: 'http://localhost:9105/sse' },
+  { id: 'cursor:playwright', name: 'playwright', source: 'cursor', transport: 'stdio', status: 'starting', port: 9102, endpoint: 'http://localhost:9102/sse' },
 ];
 
 const counts = computed(() => {
@@ -140,6 +140,8 @@ onUnmounted(() => ws?.close());
         <span class="src">{{ s.source }}</span>
       </div>
 
+      <div v-if="s.dir" class="dir" :title="s.dir">📁 {{ s.dir }}</div>
+
       <div class="meta">
         <template v-if="s.endpoint">
           <code class="endpoint" :title="s.endpoint">{{ s.endpoint }}</code>
@@ -200,8 +202,10 @@ h1 { font-size: 19px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 .badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 6px; border-radius: 5px; font-weight: 700; }
 .badge.stdio { background: rgba(109,139,255,0.15); color: var(--accent); }
+.badge.http { background: rgba(63,207,142,0.15); color: var(--green); }
 .badge.remote { background: rgba(139,145,163,0.15); color: var(--muted); }
 .src { margin-left: auto; font-size: 12px; color: var(--muted); }
+.dir { margin-top: 7px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .meta { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .endpoint { font-size: 12px; color: var(--muted); background: var(--panel-2); padding: 4px 8px; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }

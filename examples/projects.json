@@ -1,0 +1,35 @@
+{
+  "// docs": "Copy to ~/.mcp-station/projects.json (or ./mcp-station.json). Each project runs in its own `dir`.",
+  "includeClientConfigs": true,
+  "projects": [
+    {
+      "name": "my-ts-mcp",
+      "dir": "~/work/mcp/ts-svc",
+      "command": "npm",
+      "args": ["run", "start"],
+      "transport": "stdio"
+    },
+    {
+      "name": "my-py-mcp",
+      "dir": "~/work/mcp/py-svc",
+      "command": "uv",
+      "args": ["run", "server.py"],
+      "transport": "stdio"
+    },
+    {
+      "name": "self-hosted-mcp",
+      "dir": "~/work/mcp/http-svc",
+      "command": "npm",
+      "args": ["run", "serve"],
+      "transport": "http",
+      "port": 8000,
+      "healthPath": "/health",
+      "env": { "LOG_LEVEL": "info" }
+    },
+    {
+      "name": "figma",
+      "transport": "remote",
+      "url": "https://mcp.figma.com/mcp"
+    }
+  ]
+}

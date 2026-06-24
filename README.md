@@ -1,31 +1,58 @@
 # ⚡ mcp-station
 
-Launch **all your local MCP servers at once** and manage them from one dashboard.
+Launch **all your local MCP projects at once** and manage them from one dashboard
+— instead of opening a terminal per project.
 
-`mcp-station` reads the MCP server definitions you already have (Cursor, Claude
-Code, Claude Desktop, VS Code), wraps every **stdio** server in a local
-**SSE/HTTP gateway** so it becomes a persistent endpoint any client can connect
-to, health-checks your **remote** servers, and serves a live control dashboard
-at `http://localhost:4040`.
+Register your own MCP project folders in a manifest (a TypeScript project runs
+`npm run start`, a Python one `uv run server.py`, etc.). `mcp-station` runs each
+in its own directory, wraps **stdio** projects in a local SSE gateway so they
+become persistent URLs, health-checks **http**/self-hosted and **remote** ones,
+and serves a live control dashboard at `http://localhost:4040`. It also picks up
+the servers already defined in your client configs (Cursor, Claude, VS Code).
 
 > 📊 **Docs / live demo:** https://naryeo628.github.io/mcp-station/
 > (The Pages site is a read-only demo — the real dashboard runs locally, see below.)
 
 ---
 
-## Why this exists
+## Your own MCP projects (the main use case)
 
-MCP servers come in two flavors, and they behave very differently:
+Register each local project once, in `~/.mcp-station/projects.json`:
 
-| Type | Example | How it runs |
-|------|---------|-------------|
-| **stdio** | `npx @playwright/mcp`, `server-memory` | Talks over **stdin/stdout**, no port. A client normally spawns a *fresh* copy per connection. You can't "just leave it running" usefully. |
-| **remote** | `https://mcp.figma.com/mcp` | Already hosted elsewhere. Nothing to launch locally. |
+```jsonc
+{
+  "includeClientConfigs": true,        // also pull in Cursor/Claude/VS Code servers
+  "projects": [
+    { "name": "my-ts-mcp", "dir": "~/work/mcp/ts-svc", "command": "npm", "args": ["run", "start"], "transport": "stdio" },
+    { "name": "my-py-mcp", "dir": "~/work/mcp/py-svc", "command": "uv",  "args": ["run", "server.py"], "transport": "stdio" },
+    { "name": "http-svc",  "dir": "~/work/mcp/http",   "command": "npm", "args": ["run", "serve"], "transport": "http", "port": 8000, "healthPath": "/health" },
+    { "name": "figma",     "transport": "remote", "url": "https://mcp.figma.com/mcp" }
+  ]
+}
+```
 
-`mcp-station` makes "start everything" actually meaningful:
+A starter file lives in [`examples/projects.json`](examples/projects.json).
+Lookup order: `$MCP_STATION_MANIFEST` → `./mcp-station.json` → `~/.mcp-station/projects.json`.
 
-- **stdio → gateway:** each stdio server is wrapped by [`supergateway`](https://github.com/supercorp-ai/supergateway) and exposed at `http://localhost:91xx/sse`. It stays up, and any MCP client can connect by URL.
-- **remote → health-check:** remote servers are pinged so you can see at a glance whether they're reachable.
+Don't want to write it by hand? Let `scan` draft it from your projects folder:
+
+```bash
+mcp-station scan ~/work/mcp > ~/.mcp-station/projects.json
+# detects package.json / pyproject.toml, guesses the run command (entries
+# marked "VERIFY" are best-effort — check them). Then edit and save.
+```
+
+### Per-project transports
+
+| `transport` | What it means | What mcp-station does |
+|-------------|---------------|------------------------|
+| `stdio` *(default)* | server talks over stdin/stdout (the MCP norm) | runs it in `dir`, wraps it with [`supergateway`](https://github.com/supercorp-ai/supergateway) → `http://localhost:91xx/sse` |
+| `http` | server binds its own port (self-hosted HTTP/SSE) | runs it in `dir`, health-checks `http://localhost:<port><healthPath>` |
+| `remote` | already hosted elsewhere | only health-checks the `url`, never spawns |
+
+Why this matters: a bare **stdio** server left running in a terminal does
+nothing useful — it just waits on stdin. The gateway turns it into a persistent
+URL any MCP client can connect to. That's what makes "start everything" real.
 
 ---
 
@@ -48,9 +75,10 @@ Then open **http://localhost:4040**.
 ### CLI
 
 ```bash
-mcp-station serve     # serve dashboard + API (default); start servers from the UI
-mcp-station up        # serve + start every server right away
-mcp-station list      # print discovered servers and exit
+mcp-station serve        # serve dashboard + API (default); start servers from the UI
+mcp-station up           # serve + start every server right away
+mcp-station list         # print all registered servers and exit
+mcp-station scan <dir>   # draft a manifest from a projects folder (prints JSON)
 ```
 
 Environment:
@@ -61,7 +89,8 @@ Environment:
 
 ## Where it reads servers from
 
-Auto-discovered (first match wins, duplicates merged):
+1. **Your manifest** — `~/.mcp-station/projects.json` (your own projects; see above).
+2. **Client configs** — auto-discovered unless `includeClientConfigs: false`:
 
 | Source | Path |
 |--------|------|
@@ -70,7 +99,7 @@ Auto-discovered (first match wins, duplicates merged):
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | VS Code | `~/.vscode/mcp.json` |
 
-Both shapes are understood:
+Manifest entries win; duplicate client servers are merged. Both client shapes are understood:
 
 ```jsonc
 {
@@ -86,11 +115,13 @@ Both shapes are understood:
 ## Architecture
 
 ```
- ~/.cursor/mcp.json ┐
- ~/.claude.json     ├─ discover ─► normalize/dedupe ─► ServerDef[]
- (claude desktop)   ┘                                     │
-                                                          ▼
+ ~/.mcp-station/projects.json ┐
+ ~/.cursor/mcp.json           ├─ load ─► normalize/dedupe ─► ServerDef[]
+ ~/.claude.json (+ desktop)   ┘                                 │
+                                                                ▼
                                           ┌────────── Supervisor ──────────┐
+                  stdio project ─────────►│ run in dir + `supergateway`     │──► http://localhost:91xx/sse
+                  http  project ─────────►│ run in dir, health-check port   │──► http://localhost:<port>
                           stdio server ──►│ spawn `npx supergateway`        │──► http://localhost:91xx/sse
                           remote server ─►│ fetch() health-check            │──► (status only)
                                           └───────────────┬─────────────────┘

@@ -4,8 +4,8 @@ import type { ServerDef, ServerState, Status } from './types.js';
 
 const GATEWAY_PORT_BASE = 9100;
 const LOG_MAX = 500;
-/** supergateway prints one of these once the SSE endpoint is live. */
-const READY_RE = /listening|running on|sse endpoint|server is running/i;
+/** A line that means "the server is up" (supergateway or a self-hosted server). */
+const READY_RE = /listening|running on|sse endpoint|server is running|started on|http:\/\//i;
 
 interface Entry {
   def: ServerDef;
@@ -13,13 +13,15 @@ interface Entry {
   child?: ChildProcess;
   logs: string[];
   readyTimer?: NodeJS.Timeout;
+  healthTimer?: NodeJS.Timeout;
 }
 
 /**
- * Owns the lifecycle of every discovered server.
- *  - stdio servers are wrapped by a `supergateway` child that exposes them at
- *    http://localhost:<port>/sse so any MCP client can connect over HTTP.
- *  - remote servers are only health-checked (they run elsewhere).
+ * Owns the lifecycle of every server.
+ *  - stdio: spawn the command (in its dir) wrapped by `supergateway`, exposed at
+ *    http://localhost:<port>/sse.
+ *  - http:  spawn the command (in its dir); it binds its own port. Health-check it.
+ *  - remote: health-check the url only.
  * Emits 'status' (ServerState) and 'log' ({ id, line }).
  */
 export class Supervisor extends EventEmitter {
@@ -38,6 +40,8 @@ export class Supervisor extends EventEmitter {
           source: def.source,
           transport: def.transport,
           status: 'stopped',
+          dir: def.dir,
+          port: def.transport === 'http' ? def.port : undefined,
           endpoint: def.transport === 'remote' ? def.url : undefined,
         },
       });
@@ -54,27 +58,69 @@ export class Supervisor extends EventEmitter {
 
   async start(id: string): Promise<void> {
     const e = this.entries.get(id);
-    if (!e) return;
+    if (!e || e.child) return;
     if (e.def.transport === 'remote') return this.checkRemote(e);
-    if (e.child) return; // already running
+    if (e.def.transport === 'http') return this.startHttp(e);
+    return this.startStdio(e);
+  }
 
+  private startStdio(e: Entry): void {
     const port = e.state.port ?? this.nextPort++;
     e.state.port = port;
     e.state.endpoint = `http://localhost:${port}/sse`;
 
-    const stdioCmd = [e.def.command!, ...(e.def.args ?? [])].map(quote).join(' ');
+    const inner = [e.def.command!, ...(e.def.args ?? [])].map(quote).join(' ');
     const args = [
       '-y', 'supergateway',
-      '--stdio', stdioCmd,
+      '--stdio', inner,
       '--port', String(port),
       '--ssePath', '/sse',
       '--messagePath', '/message',
     ];
+    this.spawnProcess(e, 'npx', args, `npx ${args.map(quote).join(' ')}`);
 
+    // No ready line? Assume healthy after a grace period.
+    e.readyTimer = setTimeout(() => {
+      if (e.child && e.state.status === 'starting') this.setStatus(e, 'running');
+    }, 4000);
+  }
+
+  private startHttp(e: Entry): void {
+    const port = e.def.port;
+    e.state.port = port;
+    e.state.endpoint = port ? `http://localhost:${port}${e.def.healthPath ?? ''}` : undefined;
+
+    const display = `${e.def.command} ${(e.def.args ?? []).join(' ')}`;
+    this.spawnProcess(e, e.def.command!, e.def.args ?? [], display);
+
+    if (port) {
+      // Health-check until the port answers.
+      let tries = 0;
+      e.healthTimer = setInterval(async () => {
+        tries++;
+        try {
+          await fetch(`http://localhost:${port}${e.def.healthPath ?? '/'}`, {
+            signal: AbortSignal.timeout(1500),
+          });
+          if (e.child && e.state.status === 'starting') this.setStatus(e, 'running');
+          this.clearTimers(e);
+        } catch {
+          if (tries > 25) this.clearTimers(e);
+        }
+      }, 1000);
+    } else {
+      e.readyTimer = setTimeout(() => {
+        if (e.child && e.state.status === 'starting') this.setStatus(e, 'running');
+      }, 4000);
+    }
+  }
+
+  private spawnProcess(e: Entry, command: string, args: string[], display: string): void {
     this.setStatus(e, 'starting');
-    this.log(e, `$ npx ${args.map(quote).join(' ')}`);
+    this.log(e, `$ ${e.def.dir ? `(cd ${e.def.dir}) ` : ''}${display}`);
 
-    const child = spawn('npx', args, {
+    const child = spawn(command, args, {
+      cwd: e.def.dir,
       env: { ...process.env, ...e.def.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -88,22 +134,18 @@ export class Supervisor extends EventEmitter {
     child.on('exit', (code, signal) => {
       e.child = undefined;
       e.state.pid = undefined;
-      if (e.readyTimer) clearTimeout(e.readyTimer);
+      this.clearTimers(e);
       if (e.state.status !== 'stopped') {
         this.setStatus(e, code === 0 ? 'stopped' : 'error', `exited (code=${code} signal=${signal})`);
       }
     });
-
-    // Fallback: if no ready line appears, assume healthy after a grace period.
-    e.readyTimer = setTimeout(() => {
-      if (e.child && e.state.status === 'starting') this.setStatus(e, 'running');
-    }, 4000);
   }
 
   async stop(id: string): Promise<void> {
     const e = this.entries.get(id);
     if (!e) return;
     this.setStatus(e, 'stopped');
+    this.clearTimers(e);
     if (e.child) {
       e.child.kill('SIGTERM');
       e.child = undefined;
@@ -137,12 +179,18 @@ export class Supervisor extends EventEmitter {
     try {
       const res = await fetch(e.def.url!, { method: 'GET', signal: AbortSignal.timeout(5000) });
       this.log(e, `GET ${e.def.url} -> ${res.status}`);
-      // A reachable MCP endpoint often rejects a bare GET (400/405) — that still means "up".
       const up = res.ok || res.status === 400 || res.status === 405 || res.status === 406;
       this.setStatus(e, up ? 'running' : 'error', up ? undefined : `HTTP ${res.status}`);
     } catch (err) {
       this.setStatus(e, 'error', (err as Error)?.message ?? 'unreachable');
     }
+  }
+
+  private clearTimers(e: Entry): void {
+    if (e.readyTimer) clearTimeout(e.readyTimer);
+    if (e.healthTimer) clearInterval(e.healthTimer);
+    e.readyTimer = undefined;
+    e.healthTimer = undefined;
   }
 
   private setStatus(e: Entry, status: Status, err?: string): void {
