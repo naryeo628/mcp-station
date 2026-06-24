@@ -1,0 +1,42 @@
+{
+  "name": "mcp-station",
+  "version": "0.1.0",
+  "description": "Launch all your local MCP servers at once — stdio→SSE gateway + control dashboard.",
+  "type": "module",
+  "bin": {
+    "mcp-station": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "web/dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:all": "npm run build:web && npm run build",
+    "dev": "tsx watch src/cli.ts serve",
+    "start": "node dist/cli.js serve",
+    "list": "tsx src/cli.ts list"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "launcher",
+    "gateway",
+    "sse",
+    "dashboard"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.4"
+  }
+}
